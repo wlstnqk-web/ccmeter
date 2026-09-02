@@ -15,10 +15,31 @@ from ccmeter.activity import ActivityEvent, extract_activity
 from ccmeter.db import connect
 from ccmeter.display import progress, progress_done
 
-CLAUDE_DIR = Path.home() / ".claude" / "projects"
+
+def claude_projects_dir() -> Path:
+    """Where Claude Code keeps session JSONL.
+
+    Upstream hardcodes ``~/.claude/projects``. That is wrong whenever Claude Code
+    stores its state elsewhere -- e.g. a different drive on Windows -- and the
+    failure is silent: the glob finds nothing and the report comes out empty,
+    which reads as "no usage" rather than "wrong directory".
+
+    Order: CLAUDE_PROJECTS_DIR > CLAUDE_CONFIG_DIR/projects > ~/.claude/projects.
+    """
+    override = os.environ.get("CLAUDE_PROJECTS_DIR", "").strip()
+    if override:
+        return Path(override)
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if cfg:
+        return Path(cfg) / "projects"
+    return Path.home() / ".claude" / "projects"
+
+
+CLAUDE_DIR = claude_projects_dir()
 
 # Bump when parse logic changes to auto-invalidate cache.
-CACHE_VERSION = 4
+# 5: per-request `effort` captured on TokenEvent.
+CACHE_VERSION = 5
 
 
 @dataclass
@@ -31,6 +52,9 @@ class TokenEvent:
     model: str
     session_id: str
     cc_version: str
+    # Per-request reasoning effort. It varies inside a single session, so it can
+    # only be tagged per request -- a session-level label would average buckets.
+    effort: str = ""
 
 
 @dataclass
@@ -53,6 +77,7 @@ def _token_to_dict(e: TokenEvent) -> dict[str, Any]:
         "m": e.model,
         "s": e.session_id,
         "v": e.cc_version,
+        "e": e.effort,
     }
 
 
@@ -66,6 +91,7 @@ def _dict_to_token(d: dict[str, Any]) -> TokenEvent:
         model=d["m"],
         session_id=d["s"],
         cc_version=d["v"],
+        effort=d.get("e", ""),
     )
 
 
@@ -107,15 +133,33 @@ def scan(days: int = 30, recache: bool = False) -> ScanResult:
     result = ScanResult()
     seen_sessions = set()
 
+    # An empty result must never be indistinguishable from a misconfigured root.
+    # "found nothing" and "looked in the wrong place" produce the same zeros, and
+    # zeros read as a measurement rather than as a failure. Say which one it is.
     if not CLAUDE_DIR.exists():
+        print(
+            f"ccmeter: no such directory: {CLAUDE_DIR}\n"
+            "  set CLAUDE_PROJECTS_DIR (or CLAUDE_CONFIG_DIR) to where Claude Code keeps sessions.",
+            file=sys.stderr,
+        )
         return result
 
     cutoff_ts = (datetime.now(tz=timezone.utc) - timedelta(days=days)).timestamp()
     file_stats: list[tuple[Path, os.stat_result]] = []
+    any_jsonl = False
     for f in CLAUDE_DIR.glob("*/*.jsonl"):
+        any_jsonl = True
         st = f.stat()
         if st.st_mtime >= cutoff_ts:
             file_stats.append((f, st))
+
+    if not any_jsonl:
+        print(
+            f"ccmeter: no session files under {CLAUDE_DIR}\n"
+            "  set CLAUDE_PROJECTS_DIR (or CLAUDE_CONFIG_DIR) to where Claude Code keeps sessions.",
+            file=sys.stderr,
+        )
+        return result
 
     tty = sys.stdout.isatty()
     total = len(file_stats)
@@ -271,6 +315,7 @@ def scan_file(path: Path, cutoff: str) -> tuple[list[TokenEvent], list[ActivityE
                             model=model,
                             session_id=d.get("sessionId", ""),
                             cc_version=d.get("version", ""),
+                            effort=d.get("effort", ""),
                         )
                     )
 
