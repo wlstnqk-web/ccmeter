@@ -9,7 +9,8 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
+
+from ccmeter.claude_home import claude_credentials_path
 
 PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 BETA_HEADER = "oauth-2025-04-20"
@@ -93,8 +94,14 @@ def _linux_secret() -> Credentials | None:
 
 
 def _windows_credential() -> Credentials | None:
-    """Read Claude Code credentials from ~/.claude/.credentials.json."""
-    cred_file = Path.home() / ".claude" / ".credentials.json"
+    """Read Claude Code credentials from the configured Claude Code directory.
+
+    ☠Hardcoding ~/.claude here is the same bug as hardcoding the projects path:
+      when Claude Code lives elsewhere (CLAUDE_CONFIG_DIR) the file is simply not
+      found and every command reports "no credentials found" -- which reads as
+      "not logged in" rather than "looked in the wrong place".
+    """
+    cred_file = claude_credentials_path()
     try:
         return _parse_credentials(cred_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
