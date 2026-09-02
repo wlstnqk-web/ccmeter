@@ -12,6 +12,13 @@ import pytest
 
 from ccmeter import report, scan, update
 
+# The cache serializers and the warn-once set are module-private, but they are
+# exactly the surface these behaviours live on. Alias once here rather than
+# scattering suppressions through the tests.
+_token_to_dict = scan._token_to_dict  # pyright: ignore[reportPrivateUsage]
+_dict_to_token = scan._dict_to_token  # pyright: ignore[reportPrivateUsage]
+_unpriced_warned = report._UNPRICED_WARNED  # pyright: ignore[reportPrivateUsage]
+
 # --- JSONL root override ---------------------------------------------------
 # Upstream hardcodes ~/.claude/projects. When Claude Code keeps sessions elsewhere
 # the glob silently finds nothing and an empty report reads as "no usage".
@@ -43,7 +50,9 @@ def test_projects_dir_defaults_to_home(monkeypatch: pytest.MonkeyPatch):
     assert scan.claude_projects_dir() == Path.home() / ".claude" / "projects"
 
 
-def test_missing_root_is_announced(monkeypatch: pytest.MonkeyPatch, tmp_path, capsys):
+def test_missing_root_is_announced(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
     """An empty result must be distinguishable from a misconfigured root."""
     monkeypatch.setattr(scan, "CLAUDE_DIR", tmp_path / "nope")
     result = scan.scan(days=1)
@@ -51,7 +60,9 @@ def test_missing_root_is_announced(monkeypatch: pytest.MonkeyPatch, tmp_path, ca
     assert "no such directory" in capsys.readouterr().err
 
 
-def test_root_without_sessions_is_announced(monkeypatch: pytest.MonkeyPatch, tmp_path, capsys):
+def test_root_without_sessions_is_announced(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
     """The real failure we hit: the directory exists but holds no session files."""
     (tmp_path / "some-project").mkdir()
     monkeypatch.setattr(scan, "CLAUDE_DIR", tmp_path)
@@ -64,8 +75,8 @@ def test_root_without_sessions_is_announced(monkeypatch: pytest.MonkeyPatch, tmp
 # Effort varies inside a single session, so it can only be tagged per request.
 
 
-def _event(**kw) -> scan.TokenEvent:
-    base = {
+def _event(**kw: object) -> scan.TokenEvent:
+    base: dict[str, object] = {
         "ts": "2026-09-02T00:00:00Z",
         "input_tokens": 1,
         "output_tokens": 2,
@@ -80,25 +91,25 @@ def _event(**kw) -> scan.TokenEvent:
 
 
 def test_effort_survives_the_cache_round_trip():
-    restored = scan._dict_to_token(scan._token_to_dict(_event(effort="high")))
+    restored = _dict_to_token(_token_to_dict(_event(effort="high")))
     assert restored.effort == "high"
 
 
 def test_effort_round_trip_keeps_every_other_field():
     """Control: if the round trip were broken generally, the effort test proves nothing."""
     original = _event(effort="low")
-    assert scan._dict_to_token(scan._token_to_dict(original)) == original
+    assert _dict_to_token(_token_to_dict(original)) == original
 
 
 def test_old_cache_rows_without_effort_still_load():
-    d = scan._token_to_dict(_event(effort="high"))
+    d = _token_to_dict(_event(effort="high"))
     del d["e"]
-    assert scan._dict_to_token(d).effort == ""
+    assert _dict_to_token(d).effort == ""
 
 
 def test_cache_version_was_bumped_for_effort():
     """Parse output changed, so stale rows must be invalidated rather than reused."""
-    assert "e" in scan._token_to_dict(_event())
+    assert "e" in _token_to_dict(_event())
     assert scan.CACHE_VERSION >= 5
 
 
@@ -107,8 +118,8 @@ def test_cache_version_was_bumped_for_effort():
 # Pricing is the comparison axis; a silent fallback makes two models look equal.
 
 
-def test_unknown_model_warns_once(capsys):
-    report._UNPRICED_WARNED.discard("claude-fictional-9")
+def test_unknown_model_warns_once(capsys: pytest.CaptureFixture[str]):
+    _unpriced_warned.discard("claude-fictional-9")
     report.pricing_for("claude-fictional-9")
     first = capsys.readouterr().err
     report.pricing_for("claude-fictional-9")
@@ -118,7 +129,7 @@ def test_unknown_model_warns_once(capsys):
     assert second == ""
 
 
-def test_known_model_does_not_warn(capsys):
+def test_known_model_does_not_warn(capsys: pytest.CaptureFixture[str]):
     """Control: warning on everything would be the same as warning on nothing."""
     assert report.pricing_for("claude-opus-4-6") is report.PRICING["claude-opus-4-6"]
     assert capsys.readouterr().err == ""
