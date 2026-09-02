@@ -22,12 +22,27 @@ from ccmeter.scan import scan
 # Source: platform.claude.com/docs/en/about-claude/pricing
 # cache_create uses the 5-minute TTL price. 1h TTL is ~1.6x more expensive
 # but JSONL doesn't distinguish which TTL was used. ~8% underestimate if all 1h.
+# ☠Lookup is `model.startswith(prefix)` and the FIRST match in insertion order wins,
+#   so a shorter key placed above a longer one shadows it forever. `claude-fable-5-1`
+#   starts with `claude-fable-5`, and the two differ in cache_read (0.25 vs 1.00) --
+#   wrong order silently prices Fable 5.1 at 4x its cache-read rate. Longest first.
+#   test_pricing_keys_are_not_shadowed guards this for every key, not just this pair.
 PRICING = {
+    # Claude 5 family. Observed 2026-09-03 01:57 KST from the official pricing docs
+    # (REQ-482/RES-482). 1h cache-write prices are recorded in the comments below:
+    # `cost_usd` only reads input/output/cache_read/cache_create, so an extra key
+    # would be dead data that looks live. Wire it up when TTL becomes observable.
+    "claude-fable-5-1": {"input": 10.00, "output": 50.00, "cache_read": 0.25, "cache_create": 12.50},  # 1h 20.00
+    "claude-fable-5": {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_create": 12.50},  # 1h 20.00
+    "claude-opus-5": {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_create": 6.25},  # 1h 10.00
+    "claude-sonnet-5": {"input": 2.00, "output": 10.00, "cache_read": 0.20, "cache_create": 2.50},  # 1h 4.00
     "claude-opus-4-6": {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_create": 6.25},
     "claude-opus-4-5": {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_create": 6.25},
     "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_create": 3.75},
     "claude-sonnet-4-5": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_create": 3.75},
-    "claude-haiku-4-5": {"input": 1.00, "output": 5.00, "cache_read": 0.10, "cache_create": 1.25},
+    # Already correct for Claude 5-era Haiku: the published rates are unchanged and
+    # this prefix already matches the dated id (claude-haiku-4-5-20251001).
+    "claude-haiku-4-5": {"input": 1.00, "output": 5.00, "cache_read": 0.10, "cache_create": 1.25},  # 1h 2.00
 }
 
 FALLBACK_PRICING = PRICING["claude-opus-4-6"]
