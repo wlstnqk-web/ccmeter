@@ -5,6 +5,7 @@ from __future__ import annotations
 import bisect
 import json
 import sqlite3
+import sys
 from collections import defaultdict
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -73,10 +74,24 @@ def account_clause(account_id: str | None) -> Callable[..., str]:
     return _filter
 
 
+_UNPRICED_WARNED: set[str] = set()
+
+
 def pricing_for(model: str) -> dict[str, float]:
     for prefix, rates in PRICING.items():
         if model.startswith(prefix):
             return rates
+    # A model missing from PRICING is silently billed at FALLBACK rates. That is not a
+    # small error: pricing IS the comparison axis, so an unpriced Sonnet charged at Opus
+    # rates makes the two models look equal by construction. Warn once per model rather
+    # than invent a rate -- a guessed number here is worse than a loud gap.
+    if model and model not in _UNPRICED_WARNED:
+        _UNPRICED_WARNED.add(model)
+        print(
+            f"ccmeter: no published rates for {model!r}; using fallback rates."
+            " Cost-per-percent for this model is NOT comparable across models.",
+            file=sys.stderr,
+        )
     return FALLBACK_PRICING
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -86,7 +87,15 @@ def _write_cache(latest: str):
 
 
 def check_version(quiet: bool = False) -> str | None:
-    """Check if a newer version exists. Returns latest version if outdated, None if current."""
+    """Check if a newer version exists. Returns latest version if outdated, None if current.
+
+    Set CCMETER_NO_VERSION_CHECK=1 to skip entirely. This is the only outbound request
+    ccmeter makes to a host outside the Anthropic API, and on a locked-down machine an
+    unexplained package-index connection reads as an incident. Off by default (upstream
+    behaviour preserved); opt out where that connection has to be accounted for.
+    """
+    if os.environ.get("CCMETER_NO_VERSION_CHECK", "").strip() not in ("", "0", "false", "False"):
+        return None
     cached, checked_at = _read_cache()
     if time.time() - checked_at < CHECK_INTERVAL and cached:
         latest = cached
