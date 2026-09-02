@@ -50,9 +50,7 @@ def test_projects_dir_defaults_to_home(monkeypatch: pytest.MonkeyPatch):
     assert scan.claude_projects_dir() == Path.home() / ".claude" / "projects"
 
 
-def test_missing_root_is_announced(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-):
+def test_missing_root_is_announced(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     """An empty result must be distinguishable from a misconfigured root."""
     monkeypatch.setattr(scan, "CLAUDE_DIR", tmp_path / "nope")
     result = scan.scan(days=1)

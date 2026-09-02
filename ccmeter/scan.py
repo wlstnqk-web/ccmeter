@@ -12,29 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from ccmeter.activity import ActivityEvent, extract_activity
+from ccmeter.claude_home import claude_projects_dir
 from ccmeter.db import connect
 from ccmeter.display import progress, progress_done
 
-
-def claude_projects_dir() -> Path:
-    """Where Claude Code keeps session JSONL.
-
-    Upstream hardcodes ``~/.claude/projects``. That is wrong whenever Claude Code
-    stores its state elsewhere -- e.g. a different drive on Windows -- and the
-    failure is silent: the glob finds nothing and the report comes out empty,
-    which reads as "no usage" rather than "wrong directory".
-
-    Order: CLAUDE_PROJECTS_DIR > CLAUDE_CONFIG_DIR/projects > ~/.claude/projects.
-    """
-    override = os.environ.get("CLAUDE_PROJECTS_DIR", "").strip()
-    if override:
-        return Path(override)
-    cfg = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
-    if cfg:
-        return Path(cfg) / "projects"
-    return Path.home() / ".claude" / "projects"
-
-
+# Claude Code 의 디렉토리 해석은 `claude_home` 한 곳에 모여 있다 — 세션 경로와
+# 자격증명 경로가 **같은 가정을 공유**하는데 한쪽만 고쳐서 한 번 데였다.
 CLAUDE_DIR = claude_projects_dir()
 
 # Bump when parse logic changes to auto-invalidate cache.
