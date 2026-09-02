@@ -72,3 +72,35 @@ def test_unknown_model_still_falls_back(capsys: pytest.CaptureFixture[str]):
 
 def test_fallback_is_unchanged():
     assert report.FALLBACK_PRICING is report.PRICING["claude-opus-4-6"]
+
+
+# --- models that were correct but noisy ------------------------------------
+# Opus 4.7/4.8 publish the same rates as 4.6, so the fallback already computed
+# the right cost -- and warned that it could not. Listing them keeps the numbers
+# identical and removes a warning that was true of the code but false of the data.
+
+OPUS_46_RATES = (5.00, 25.00, 0.50, 6.25)
+
+
+@pytest.mark.parametrize("key", ["claude-opus-4-7", "claude-opus-4-8"])
+def test_recent_opus_keys_carry_the_published_rates(key: str):
+    entry = report.PRICING[key]
+    got = (entry["input"], entry["output"], entry["cache_read"], entry["cache_create"])
+    assert got == OPUS_46_RATES
+
+
+@pytest.mark.parametrize("model", ["claude-opus-4-7", "claude-opus-4-8"])
+def test_recent_opus_models_no_longer_warn(model: str, capsys: pytest.CaptureFixture[str]):
+    assert report.pricing_for(model) is not report.FALLBACK_PRICING
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("model", ["claude-opus-4-7", "claude-opus-4-8"])
+def test_cost_is_unchanged_by_listing_them(model: str):
+    """Control: this change must move no number.
+
+    If these rates ever diverge from 4.6 the assertion below should be updated
+    deliberately -- with a source -- rather than silently drifting.
+    """
+    tokens = {"input": 1_000_000, "output": 1_000_000, "cache_read": 1_000_000, "cache_create": 1_000_000}
+    assert report.cost_usd(tokens, model) == report.cost_usd(tokens, "claude-opus-4-6")

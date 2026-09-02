@@ -36,6 +36,13 @@ PRICING = {
     "claude-fable-5": {"input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_create": 12.50},  # 1h 20.00
     "claude-opus-5": {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_create": 6.25},  # 1h 10.00
     "claude-sonnet-5": {"input": 2.00, "output": 10.00, "cache_read": 0.20, "cache_create": 2.50},  # 1h 4.00
+    # Same published rates as 4.6, so the fallback already produced the right numbers
+    # for these -- what it also produced was a "no published rates ... NOT comparable"
+    # warning on figures that were in fact correct. A true warning on a false premise
+    # trains the reader to ignore it, so the keys are listed explicitly.
+    # Measured in this deployment: 4-7 and 4-8 both appear in the session logs.
+    "claude-opus-4-8": {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_create": 6.25},
+    "claude-opus-4-7": {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_create": 6.25},
     "claude-opus-4-6": {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_create": 6.25},
     "claude-opus-4-5": {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_create": 6.25},
     "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_create": 3.75},
