@@ -186,7 +186,14 @@ def _write_health(
     }
     tmp = HEALTH_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(health))
-    tmp.rename(HEALTH_FILE)
+    # ☠`Path.rename` is not the atomic-overwrite this docstring promises: on Windows it
+    #   raises FileExistsError when the destination exists, so only the *first* write
+    #   ever succeeds and every later poll cycle dies here.
+    #   [measured 2026-09-03] a fresh daemon ran for ~6s and exited with
+    #   `FileExistsError: [WinError 183] ... health.tmp -> health.json`; collection had
+    #   been stuck at 3 samples since the first cycle wrote health.json.
+    #   `Path.replace` is os.replace — atomic on POSIX *and* Windows, overwrite included.
+    tmp.replace(HEALTH_FILE)
 
 
 def _rotate_logs() -> None:
