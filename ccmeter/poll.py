@@ -48,10 +48,35 @@ class PollResult:
     error: str = ""
 
 
+def _status_label(status: int) -> str:
+    """Bucket a failure for counting. Network/transport failures carry no HTTP status."""
+    return str(status) if status else "network"
+
+
+def _event(msg: str) -> None:
+    """Log one operational event with a timestamp, on stdout.
+
+    Two decisions here, and both exist because of what the logs could *not* answer:
+
+    ☠**Timestamps.** Nothing written by this daemon carried one. A log holding 93
+      `retry in 120s [429]` lines says how many, never when — so "is this still
+      happening?" and "what else was running then?" are both unanswerable after the
+      fact. [measured 2026-09-04] that is exactly where a rate-limit investigation
+      stopped: the count was known, the window was not.
+
+    ☠**One stream.** Successes went to stdout and retries to stderr, i.e. two files
+      that cannot be interleaved. Even with timestamps on both, correlating them means
+      merging by hand. Operational failures are expected events, not crashes, so they
+      belong on the same stream as the samples. What stays on stderr is startup
+      errors and real tracebacks — after this, anything in `poll.err` is a fault.
+    """
+    print(f"[{datetime.now(tz=timezone.utc).isoformat(timespec='seconds')}] {msg}", flush=True)
+
+
 def _handle_signal(sig: int, frame: types.FrameType | None) -> None:
     global _running
     _running = False
-    print("\nshutting down...")
+    _event("shutting down")
 
 
 def fetch_usage(creds: Credentials) -> PollResult:
@@ -108,7 +133,7 @@ def record_samples(
         direction = ""
         if prev is not None:
             direction = f" (was {prev}%)"
-        print(f"  {key}: {utilization}%{direction}")
+        _event(f"{key}: {utilization}%{direction}")
 
         last_seen[key] = utilization
 
@@ -175,14 +200,28 @@ def _write_health(
     interval: int,
     consecutive_failures: int,
     recent_errors: list[dict[str, Any]],
+    failure_counts: dict[str, int] | None = None,
+    counts_since: str | None = None,
 ) -> None:
-    """Atomically write daemon health to a JSON file. Single snapshot, no history."""
+    """Atomically write daemon health to a JSON file. Single snapshot, no history.
+
+    `failure_counts` totals failures by kind since `counts_since` (a `429` key counts
+    rate-limit responses). `recent_errors` holds only the last few, so a failure rate
+    could not be read off this file at all — five entries look the same whether they
+    are five failures or five hundred.
+
+    ⛔**Counts reset when the daemon restarts.** They are in-memory totals, not a
+      ledger. `counts_since` is here so the numbers are never read as lifetime totals;
+      a rate needs both the count and the window it was gathered over.
+    """
     health = {
         "ts": datetime.now(tz=timezone.utc).isoformat(),
         "ok": ok,
         "interval": interval,
         "consecutive_failures": consecutive_failures,
         "recent_errors": recent_errors[-_MAX_RECENT_ERRORS:],
+        "failure_counts": dict(failure_counts or {}),
+        "counts_since": counts_since,
     }
     tmp = HEALTH_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(health))
@@ -243,6 +282,12 @@ def run_poll(interval: int = 120, once: bool = False):
     backoff = interval
     consecutive_failures = 0
     recent_errors: list[dict[str, Any]] = []
+    failure_counts: dict[str, int] = {}
+    counts_since = datetime.now(tz=timezone.utc).isoformat()
+    # ★A restart is where the counters reset, so it has to be *on* the timeline too.
+    #   Without it `failure_counts` can be read against the wrong window: the numbers
+    #   restart silently and the log gives no boundary to notice that at.
+    _event(f"poll loop started (interval={interval}s, counting failures from here)")
     account_dirty = False  # true after cred refresh; resolve on next successful fetch
     while _running:
         result = fetch_usage(creds)
@@ -252,7 +297,7 @@ def run_poll(interval: int = 120, once: bool = False):
                 if new_account and new_account != account_id:
                     account_id = new_account
                     last_seen = seed_last_seen(conn, account_id=account_id)
-                    print(f"  account changed: {account_id[:8]}…")
+                    _event(f"account changed: {account_id[:8]}…")
                 account_dirty = False
             if pinned and account_id != pinned:
                 pass  # skip — wrong account
@@ -261,9 +306,14 @@ def run_poll(interval: int = 120, once: bool = False):
             backoff = interval
             consecutive_failures = 0
             recent_errors.clear()
-            _write_health(True, interval, 0, [])
+            # ★counts survive success. Clearing them here would make the totals mean
+            #   "failures since the last success", which is what `consecutive_failures`
+            #   already says — and a failure *rate* would become unmeasurable again.
+            _write_health(True, interval, 0, [], failure_counts, counts_since)
         else:
             consecutive_failures += 1
+            kind = _status_label(result.status)
+            failure_counts[kind] = failure_counts.get(kind, 0) + 1
             recent_errors.append({
                 "ts": datetime.now(tz=timezone.utc).isoformat(),
                 "status": result.status,
@@ -279,7 +329,7 @@ def run_poll(interval: int = 120, once: bool = False):
                     creds = refreshed
                     tier = creds.subscription_type or creds.rate_limit_tier
                     account_dirty = True
-                    print("  refreshed credentials")
+                    _event("refreshed credentials")
                     consecutive_failures = 0
                     if not once:
                         continue  # retry now with fresh creds
@@ -289,15 +339,15 @@ def run_poll(interval: int = 120, once: bool = False):
                     creds = refreshed
                     tier = creds.subscription_type or creds.rate_limit_tier
                     account_dirty = True
-                    print("  refreshed credentials (fallback)")
+                    _event("refreshed credentials (fallback)")
                     consecutive_failures = 0
 
-            _write_health(False, interval, consecutive_failures, recent_errors)
+            _write_health(False, interval, consecutive_failures, recent_errors, failure_counts, counts_since)
 
             delay = _next_delay(result, interval, backoff)
             backoff = delay
             label = f" [{result.status}]" if result.status else ""
-            print(f"  retry in {delay}s{label}", file=sys.stderr)
+            _event(f"retry in {delay}s{label}")
 
         if once:
             break
@@ -306,4 +356,4 @@ def run_poll(interval: int = 120, once: bool = False):
 
     conn.close()
     lock.close()
-    print("stopped.")
+    _event("stopped")

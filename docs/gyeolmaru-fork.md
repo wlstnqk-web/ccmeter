@@ -78,6 +78,32 @@ explicit subcommand — but in this deployment it is **out of bounds**: we insta
 this fork's source, and a self-update would silently replace audited code with an
 unaudited build. Update by pulling this repository instead.
 
+## 6. Poll events are timestamped and share one stream
+
+⛔**Not additive — this changes what the daemon writes.** Recorded here because the
+fork note otherwise promises upstream-identical behaviour with no environment set.
+
+Upstream logs samples to stdout and retries to stderr, and neither carries a
+timestamp. Measured 2026-09-04 against a live `poll.err` holding 93
+`retry in 120s [429]` lines: the count was readable, the window was not. Whether
+those rate limits were ongoing or a finished episode could not be decided from the
+file, and the successes that would have bracketed them were in a different file with
+no timestamps either.
+
+- Every operational event now carries a UTC timestamp (`_event`).
+- Retries and credential refreshes moved to stdout, so failures interleave with the
+  samples around them. `poll.err` keeps startup errors and tracebacks — after this,
+  anything in it is a fault rather than routine noise.
+- `health.json` gained `failure_counts` (by kind: `429`, `401`, `network`) and
+  `counts_since`. `recent_errors` holds five entries, so a failure *rate* was never
+  readable from it — five entries look the same whether they came from five failures
+  or five hundred. Counts reset on restart, which is why the window is written beside
+  them: a count without its window is not a rate.
+
+This is instrumentation only. It does not change retry timing, and deliberately so —
+the backoff question is a separate change, and folding them together would make it
+impossible to tell which one moved the numbers.
+
 ## Tests
 
 `tests/test_local_measurement.py` covers all four changes. Each behaviour is paired with

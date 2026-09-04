@@ -31,7 +31,8 @@ The daemon (`poll.py`) is the most important component. Everything else can be d
 
 - **Pidfile lock**: `fcntl.LOCK_EX` on `~/.ccmeter/poll.pid` prevents duplicate pollers
 - **Status-aware retry**: 429 → respects full Retry-After header (no cap), 401/403 → immediate credential refresh + 30s retry, network/5xx → exponential backoff capped at 5m
-- **Health file**: `~/.ccmeter/health.json` — atomically written every poll cycle. Single snapshot with ok/fail state and last 5 errors. Read by `ccmeter status`. No growth.
+- **Health file**: `~/.ccmeter/health.json` — atomically written every poll cycle. Single snapshot with ok/fail state, last 5 errors, and failure counts by kind since `counts_since`. Read by `ccmeter status`. No growth. Counts are in-memory totals and reset when the daemon restarts, which is why the window is written next to them.
+- **Event log**: every operational event carries a UTC timestamp and goes to stdout — samples, retries, credential refreshes alike. Failures are expected events, not crashes, so they share a stream with successes; splitting them made the two files impossible to interleave. `poll.err` is therefore reserved for startup errors and real tracebacks: anything in it is a fault.
 - **Log rotation**: truncates `poll.log`/`poll.err` to last 64KB when they exceed 512KB, runs once at startup
 - **Credential refresh**: 401/403 triggers immediate keychain re-read. Other failures trigger refresh after 3 consecutive failures as fallback
 - **Account pinning**: if `~/.ccmeter/config.json` has `account_id`, poller skips recording when active credential doesn't match. Prevents data pollution on shared machines.
@@ -44,8 +45,8 @@ The daemon (`poll.py`) is the most important component. Everything else can be d
   config.json   — account pin, user preferences
   health.json   — daemon health snapshot (written atomically each cycle)
   poll.pid      — pidfile lock
-  poll.log      — daemon stdout (launchd/systemd)
-  poll.err      — daemon stderr
+  poll.log      — daemon stdout: timestamped operational events (samples, retries, refreshes)
+  poll.err      — daemon stderr: startup errors and tracebacks only
 ```
 
 ## Usage API
