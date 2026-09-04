@@ -84,6 +84,21 @@ def test_retry_after_accepts_an_http_date(capsys: pytest.CaptureFixture[str]) ->
     assert capsys.readouterr().out == "", "a readable header must not log a failure"
 
 
+def test_a_past_date_does_not_become_an_immediate_retry() -> None:
+    """A Retry-After already in the past must not turn into "ask again now".
+
+    `parse_retry_after` returns 0 for it, and `_next_delay` reaches the header only
+    through a truthiness check — so 0 falls through to our own backoff. That is the
+    right behaviour and it rests entirely on 0 being falsy, which is exactly the kind
+    of thing a later reader "corrects" into `is not None`. Then a stale date becomes an
+    instant retry against a rate limit.
+    """
+    assert delay(429, backoff=480, retry_after=0) == 900, "a past date became a hammer"
+    # For contrast: a real instruction of 0 seconds is not something we invent, but a
+    # positive one is honoured exactly.
+    assert delay(429, backoff=480, retry_after=5) == 5
+
+
 def test_unreadable_retry_after_is_announced(capsys: pytest.CaptureFixture[str]) -> None:
     """"Sent one we could not read" and "sent none" are different facts.
 

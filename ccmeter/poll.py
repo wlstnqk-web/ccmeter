@@ -112,7 +112,12 @@ def parse_retry_after(raw: str | None, now: datetime | None = None) -> int | Non
       Retry-After we could not read" and "the server sent none" are different facts and
       lead to different fixes.
 
-    ★A date already in the past yields 0, not a negative delay — the caller floors it.
+    ★A date already in the past yields 0, never a negative delay. The caller treats 0
+      as "no usable instruction" and falls back to its own backoff — deliberately, not
+      by accident: a past date read literally means "retry immediately", and retrying a
+      429 immediately is the behaviour this module exists to stop. `test_a_past_date_
+      does_not_become_an_immediate_retry` pins that, because the difference lives in a
+      falsy check that is easy to "fix" into a hammer.
     """
     if raw is None:
         return None
