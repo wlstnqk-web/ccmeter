@@ -53,6 +53,26 @@ reportUnknownArgumentType = false
 reportUnknownVariableType = false
 reportUnknownParameterType = false
 
+# Tests reach into module internals on purpose — `_write_health`, `_event`,
+# `_status_label` are where the behaviour worth pinning actually lives, and a test
+# that only exercises the public surface would not have caught the health-file bug
+# that silently capped collection at the first poll cycle.
+#
+# ⛔Scoped to `tests`, not global. Under strict, `reportPrivateUsage` still applies to
+#   `ccmeter/` itself, so a module reaching into another module's internals is still
+#   an error. Turning it off globally would buy a green check by removing the rule
+#   from the code it was written for.
+#
+# The alternative — a `# pyright: ignore` on each call — puts the decision in the
+# wrong place: it makes every new test carry a suppression comment, and a file-level
+# suppression hides whatever *else* goes wrong in that file later.
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+reportPrivateUsage = false
+
+[[tool.pyright.executionEnvironments]]
+root = "."
+
 [tool.hatch.version]
 path = "ccmeter/__init__.py"
 
