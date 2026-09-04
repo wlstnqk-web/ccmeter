@@ -37,6 +37,18 @@ BUCKETS = ("five_hour", "seven_day", "seven_day_sonnet", "seven_day_opus", "seve
 
 _MAX_RECENT_ERRORS = 5
 
+# Ceiling for rate-limit backoff when the server sends no Retry-After.
+#
+# The tension is real in both directions: too short and the daemon keeps knocking on a
+# limit it cannot see the shape of; too long and collection thins out, which is the one
+# thing this daemon exists to do. 15 minutes is roughly a tenth of the five-hour window
+# the samples describe — long enough to stop being the cause, short enough that a
+# rate-limited stretch does not become a hole in the data.
+#
+# ★A Retry-After header overrides this entirely. This is only the guess made when the
+#   server declines to say.
+RATE_LIMIT_MAX_DELAY = 900
+
 _running = True
 
 
@@ -138,11 +150,23 @@ def _next_delay(result: PollResult, interval: int, backoff: int) -> int:
     if result.data:
         return interval
 
-    # 429: respect Retry-After fully, or use interval as floor
+    # 429: respect Retry-After fully; without it, back off instead of re-knocking.
+    #
+    # ☠`max(interval, 60)` returned the *same* delay the daemon was already using —
+    #   at the default 120s interval, every rate-limited cycle retried on exactly the
+    #   schedule that produced the rate limit. A 429 says "you asked too often", and
+    #   the answer to it cannot be "ask again at the same rate": once the limit is hit
+    #   the daemon has no way to stop hitting it, and the episode ends when the server
+    #   relents rather than when the client backs down.
+    #   [measured 2026-09-04] a live poll.err held 93 consecutive `retry in 120s [429]`
+    #   lines — every one of them the same interval, none of them a backoff.
+    #
+    # ★The floor stays at `interval`: backing off *below* the normal cadence would be
+    #   a speed-up, not a retreat.
     if result.status == 429:
         if result.retry_after:
             return result.retry_after
-        return max(interval, 60)
+        return min(max(backoff * 2, interval), RATE_LIMIT_MAX_DELAY)
 
     # 401/403: cred refresh will happen separately, short retry
     if result.status in (401, 403):
