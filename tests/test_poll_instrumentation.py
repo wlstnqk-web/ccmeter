@@ -62,6 +62,85 @@ def test_shutdown_is_on_the_timeline_too(capsys: pytest.CaptureFixture[str]) -> 
     poll._running = True  # the handler flips module state; put it back
 
 
+def test_both_ends_of_the_counting_window_are_stamped(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A window has two edges, and the net only covered one.
+
+    The shutdown test above pins `shutting down`, but `stopped` and the start event
+    were reachable without a timestamp — the processing was right and nothing was
+    watching it. Since `failure_counts` resets per run, the *start* edge is the one a
+    reader needs most: it is what `counts_since` means in the log.
+
+    Driving one `once=True` cycle is what makes both edges observable; asserting on
+    the source text would pass against a print that merely mentions the word.
+    """
+    monkeypatch.setattr(poll, "PIDFILE", tmp_path / "poll.pid")
+    monkeypatch.setattr(poll, "HEALTH_FILE", tmp_path / "health.json")
+    monkeypatch.setattr(poll, "_acquire_lock", lambda: (tmp_path / "lock").open("w"))
+    monkeypatch.setattr(poll, "_rotate_logs", lambda: None)
+    monkeypatch.setattr(poll, "get_credentials", lambda: _FakeCreds())
+    monkeypatch.setattr(poll, "fetch_account_id", _fake_account_id)
+    monkeypatch.setattr(poll, "pinned_account", _no_pin)
+    monkeypatch.setattr(poll, "connect", _FakeConn)
+    monkeypatch.setattr(poll, "seed_last_seen", _no_seed)
+    # ★Non-empty on purpose: `if result.data:` treats {} as a failure, which would send
+    #   this through the retry path and never reach the stop edge.
+    ok = poll.PollResult(data={"five_hour": {"utilization": 1.0}}, status=200)
+
+    def _one_good_poll(creds: object) -> poll.PollResult:
+        return ok
+
+    monkeypatch.setattr(poll, "fetch_usage", _one_good_poll)
+    monkeypatch.setattr(poll, "record_samples", _no_record)
+
+    poll.run_poll(interval=120, once=True)
+
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+    started = [ln for ln in lines if "poll loop started" in ln]
+    stopped = [ln for ln in lines if "stopped" in ln]
+
+    assert started, "no start event — the counting window has no beginning in the log"
+    assert ISO_PREFIX.match(started[0]), f"start edge unstamped: {started[0]!r}"
+    assert stopped, "no stop event"
+    assert ISO_PREFIX.match(stopped[0]), f"stop edge unstamped: {stopped[0]!r}"
+
+
+def _fake_account_id(token: str) -> str:
+    return "acct-0001"
+
+
+def _no_pin() -> str | None:
+    return None
+
+
+def _no_seed(conn: object, account_id: str | None = None) -> dict[str, float]:
+    return {}
+
+
+def _no_record(*_args: object, **_kwargs: object) -> dict[str, float]:
+    return {}
+
+
+class _FakeCreds:
+    access_token = "token"
+    subscription_type = "max"
+    rate_limit_tier = "default_claude_max_20x"
+
+
+class _FakeConn:
+    """Only what run_poll touches on the success path."""
+
+    def execute(self, *_args: object) -> None:
+        return None
+
+    def commit(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
 def test_status_label_separates_transport_failures_from_http_ones() -> None:
     # A transport failure has no HTTP status; counting it as "0" would read as a code.
     assert poll._status_label(429) == "429"

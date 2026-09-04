@@ -11,6 +11,10 @@ one, and when it does not, the delay grows instead of standing still.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+import pytest
+
 from ccmeter import poll
 
 INTERVAL = 120
@@ -53,6 +57,47 @@ def test_backoff_never_drops_below_the_normal_cadence() -> None:
     """
     assert delay(429, backoff=10) == INTERVAL
     assert delay(429, backoff=1) == INTERVAL
+
+
+def test_floor_holds_even_when_the_interval_is_tiny() -> None:
+    """`interval` alone is not a floor.
+
+    The code this replaces read `max(interval, 60)`; the 60 was worth keeping. At a 10s
+    interval the doubled backoff is 20s, which is arithmetically a retreat and
+    practically still hammering.
+    """
+    result = poll.PollResult(status=429)
+    assert poll._next_delay(result, 10, backoff=10) == poll.RATE_LIMIT_MIN_DELAY
+    assert poll._next_delay(result, 5, backoff=1) == poll.RATE_LIMIT_MIN_DELAY
+
+
+def test_retry_after_accepts_an_http_date(capsys: pytest.CaptureFixture[str]) -> None:
+    """RFC 7231 allows a date, not only seconds.
+
+    Reading only the integer form let a date-valued header fall through to our own
+    guess *silently* — the server named a time and nothing recorded that we ignored it.
+    """
+    now = datetime(2026, 9, 5, 12, 0, 0, tzinfo=timezone.utc)
+    assert poll.parse_retry_after("Sat, 05 Sep 2026 12:05:00 GMT", now=now) == 300
+    # A date already past is 0, not negative — the caller's floor then applies.
+    assert poll.parse_retry_after("Sat, 05 Sep 2026 11:00:00 GMT", now=now) == 0
+    assert capsys.readouterr().out == "", "a readable header must not log a failure"
+
+
+def test_unreadable_retry_after_is_announced(capsys: pytest.CaptureFixture[str]) -> None:
+    """"Sent one we could not read" and "sent none" are different facts.
+
+    Falling back is the right behaviour; doing it quietly is not — that is the failure
+    this whole change set exists to remove, one layer in.
+    """
+    assert poll.parse_retry_after("whenever you feel like it") is None
+    out = capsys.readouterr().out
+    assert "Retry-After" in out, "an unreadable header vanished without a trace"
+
+    # Absent or blank is not a failure and must stay silent.
+    assert poll.parse_retry_after(None) is None
+    assert poll.parse_retry_after("   ") is None
+    assert capsys.readouterr().out == "", "a missing header is not an error"
 
 
 def test_other_failures_keep_their_own_paths() -> None:

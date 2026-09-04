@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import IO, Any
 
@@ -48,6 +49,14 @@ _MAX_RECENT_ERRORS = 5
 # ★A Retry-After header overrides this entirely. This is only the guess made when the
 #   server declines to say.
 RATE_LIMIT_MAX_DELAY = 900
+
+# Floor for the same guess. Carried over from the code this replaces, which read
+# `max(interval, 60)` — the 60 was the part worth keeping.
+#
+# ☠Without it the floor would be `interval` alone, and a daemon configured to poll
+#   every 10s would answer a rate limit with a 20s wait. That is arithmetically a
+#   backoff and practically still hammering.
+RATE_LIMIT_MIN_DELAY = 60
 
 _running = True
 
@@ -91,6 +100,38 @@ def _handle_signal(sig: int, frame: types.FrameType | None) -> None:
     _event("shutting down")
 
 
+def parse_retry_after(raw: str | None, now: datetime | None = None) -> int | None:
+    """`Retry-After` in either RFC 7231 form. Returns seconds, or None if unusable.
+
+    ☠**The header has two shapes** — `delta-seconds` and an HTTP-date. Reading only the
+      integer form meant a date-valued header fell through to our own guess *silently*:
+      the server named a time, we ignored it, and nothing said so. That is the same
+      failure this change set exists to remove, one layer in.
+
+    ★An unreadable value is logged rather than swallowed. "The server sent a
+      Retry-After we could not read" and "the server sent none" are different facts and
+      lead to different fixes.
+
+    ★A date already in the past yields 0, not a negative delay — the caller floors it.
+    """
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    if value.isdigit():
+        return int(value)
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        _event(f"unreadable Retry-After header, falling back to our own backoff: {value[:80]!r}")
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    reference = now or datetime.now(tz=timezone.utc)
+    return max(0, int((when - reference).total_seconds()))
+
+
 def fetch_usage(creds: Credentials) -> PollResult:
     """Fetch current usage from Anthropic's OAuth endpoint."""
     req = urllib.request.Request(
@@ -104,11 +145,8 @@ def fetch_usage(creds: Credentials) -> PollResult:
         resp = urllib.request.urlopen(req, timeout=10)
         return PollResult(data=json.loads(resp.read().decode()), status=resp.status)
     except urllib.error.HTTPError as e:
-        retry_after = None
         ra = e.headers.get("Retry-After") if e.headers else None
-        if ra and ra.isdigit():
-            retry_after = int(ra)
-        return PollResult(status=e.code, retry_after=retry_after, error=str(e))
+        return PollResult(status=e.code, retry_after=parse_retry_after(ra), error=str(e))
     except (urllib.error.URLError, json.JSONDecodeError, OSError) as e:
         return PollResult(error=str(e))
 
@@ -191,7 +229,7 @@ def _next_delay(result: PollResult, interval: int, backoff: int) -> int:
     if result.status == 429:
         if result.retry_after:
             return result.retry_after
-        return min(max(backoff * 2, interval), RATE_LIMIT_MAX_DELAY)
+        return min(max(backoff * 2, interval, RATE_LIMIT_MIN_DELAY), RATE_LIMIT_MAX_DELAY)
 
     # 401/403: cred refresh will happen separately, short retry
     if result.status in (401, 403):
