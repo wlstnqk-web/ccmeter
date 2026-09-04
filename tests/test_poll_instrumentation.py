@@ -48,6 +48,20 @@ def test_event_goes_to_stdout_not_stderr(capsys: pytest.CaptureFixture[str]) -> 
     assert captured.err == "", "operational events must not split across streams"
 
 
+def test_shutdown_is_on_the_timeline_too(capsys: pytest.CaptureFixture[str]) -> None:
+    """A restart is where the failure counters reset, so it has to be timestamped.
+
+    `failure_counts` is an in-memory total. Without a stamped boundary the numbers
+    restart silently and a reader has no way to notice they are looking at a fresh
+    window — which is the same "count without its window" failure this change exists
+    to remove.
+    """
+    poll._handle_signal(15, None)
+    out = capsys.readouterr().out
+    assert ISO_PREFIX.match(out), f"shutdown left the timeline: {out!r}"
+    poll._running = True  # the handler flips module state; put it back
+
+
 def test_status_label_separates_transport_failures_from_http_ones() -> None:
     # A transport failure has no HTTP status; counting it as "0" would read as a code.
     assert poll._status_label(429) == "429"

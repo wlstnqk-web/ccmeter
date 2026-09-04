@@ -76,7 +76,7 @@ def _event(msg: str) -> None:
 def _handle_signal(sig: int, frame: types.FrameType | None) -> None:
     global _running
     _running = False
-    print("\nshutting down...")
+    _event("shutting down")
 
 
 def fetch_usage(creds: Credentials) -> PollResult:
@@ -284,6 +284,10 @@ def run_poll(interval: int = 120, once: bool = False):
     recent_errors: list[dict[str, Any]] = []
     failure_counts: dict[str, int] = {}
     counts_since = datetime.now(tz=timezone.utc).isoformat()
+    # ★A restart is where the counters reset, so it has to be *on* the timeline too.
+    #   Without it `failure_counts` can be read against the wrong window: the numbers
+    #   restart silently and the log gives no boundary to notice that at.
+    _event(f"poll loop started (interval={interval}s, counting failures from here)")
     account_dirty = False  # true after cred refresh; resolve on next successful fetch
     while _running:
         result = fetch_usage(creds)
@@ -352,4 +356,4 @@ def run_poll(interval: int = 120, once: bool = False):
 
     conn.close()
     lock.close()
-    print("stopped.")
+    _event("stopped")
