@@ -1,6 +1,14 @@
 name: Docs Coverage
 on: [pull_request]
 
+# This action posts its grade as a PR comment, so it needs write on pull-requests.
+# ⛔Declared here rather than raising the repository-wide default: that default
+#   applies to every workflow in the repo, and only this one writes anything. A
+#   repo-level grant would hand write access to four workflows that just read.
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   grade:
     runs-on: ubuntu-latest
