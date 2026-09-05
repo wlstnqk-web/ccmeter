@@ -58,6 +58,30 @@ RATE_LIMIT_MAX_DELAY = 900
 #   backoff and practically still hammering.
 RATE_LIMIT_MIN_DELAY = 60
 
+# Ceiling for a stretch of 401/403. Credentials do not fix themselves: a poll that is
+# rejected for auth will be rejected again a second later, and the loop has no way to
+# make it right. So the daemon must retreat while it waits for a human or a refresh.
+#
+# ☠The code this replaces returned a flat 30 with no ceiling. A token that expires
+#   overnight is knocked on 2,880 times before anyone wakes up. That is not a retry,
+#   it is a drumbeat — and it is the same shape as the 429 bug fixed just above:
+#   the client answering a refusal with the cadence that caused it.
+#
+# ★5 minutes matches the ceiling the network/server branch already uses. Long enough to
+#   stop being noise, short enough that a refreshed credential is picked up soon after.
+AUTH_FAIL_MAX_DELAY = 300
+
+# Floor for the same wait, carried over from the flat 30 this replaces.
+#
+# ☠It is a floor, not the first delay. `backoff` starts at `interval`, so with the
+#   default 120s cadence even the *first* rejection now waits 240s where it used to
+#   wait 30s. That is a real behaviour change and it is the point: a single 4-minute
+#   gap in usage samples costs less than 2,880 rejected knocks overnight.
+#   [measured] the floor only binds when `interval` is small (interval 10 -> 30s).
+# ★A recovered credential is picked up on the next attempt, and the next success
+#   resets `backoff` to `interval`, so one bad poll does not leave a lasting penalty.
+AUTH_FAIL_MIN_DELAY = 30
+
 _running = True
 
 
@@ -236,9 +260,19 @@ def _next_delay(result: PollResult, interval: int, backoff: int) -> int:
             return result.retry_after
         return min(max(backoff * 2, interval, RATE_LIMIT_MIN_DELAY), RATE_LIMIT_MAX_DELAY)
 
-    # 401/403: cred refresh will happen separately, short retry
+    # 401/403: the credential is the problem, and polling cannot solve it.
+    #
+    # ★Same contract as the 429 branch: a refusal must change the cadence, not repeat
+    #   it. Rejections back off toward AUTH_FAIL_MAX_DELAY instead of drumming at a
+    #   fixed rate forever. ☠This does change the first delay too (240s at the default
+    #   interval, not 30s) — see AUTH_FAIL_MIN_DELAY for why that trade is the right way.
+    # ⛔This is not a reason to stop polling: once the credential is refreshed the very
+    #   next attempt succeeds, so the ceiling stays short enough to notice that.
+    # ★[measured] the loop already tries `get_credentials()` on every 401/403 and retries
+    #   *immediately* when the token actually changed. So this delay is only ever paid
+    #   while a refresh does **not** fix the problem — the healthy case never reaches it.
     if result.status in (401, 403):
-        return 30
+        return min(max(backoff * 2, AUTH_FAIL_MIN_DELAY), AUTH_FAIL_MAX_DELAY)
 
     # network/server errors: exponential backoff capped at 5m
     return min(backoff * 2, 300)
