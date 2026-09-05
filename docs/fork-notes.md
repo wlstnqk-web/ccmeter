@@ -104,10 +104,57 @@ This is instrumentation only. It does not change retry timing, and deliberately 
 the backoff question is a separate change, and folding them together would make it
 impossible to tell which one moved the numbers.
 
+## 7. A 429 changes the retry cadence
+
+⛔**Not additive** — like §6, this changes daemon behaviour and is recorded for that
+reason. This is the separate change §6 said was coming.
+
+Upstream computed the post-429 delay as `max(interval, 60)`. At the default 120s
+interval that returns 120 — **the interval itself**. The daemon answered "you are
+asking too often" by asking again at exactly the rate that produced the limit, so an
+episode could only end when the server relented. The 93 identical `retry in 120s [429]`
+lines quoted in §6 are that arithmetic, not a coincidence.
+
+Now, on a 429:
+
+- If the server sent `Retry-After`, that wins outright — including when it asks for
+  longer than our own ceiling. The server knows its limit better than our guess.
+- Otherwise the delay doubles, floored at `max(interval, 60)` and capped at 900s
+  (a tenth of the five-hour window). The floor matters in both directions: backing off
+  *below* the normal cadence would be a speed-up wearing a retreat's name, and the 60
+  is the one part of the old expression worth keeping — at a 10s interval, a doubled
+  20s backoff is arithmetically a retreat and practically still hammering.
+
+`Retry-After` is defined in two forms (RFC 7231 §7.1.3) and both are now parsed:
+delta-seconds and HTTP-date. Reading only the integer form let a date-valued header
+fall through to our own guess **silently** — the server named a time and nothing
+recorded that we ignored it. An unreadable header now says so on the event stream;
+an absent or blank one stays quiet, because that is not a failure.
+
+A date already in the past parses to 0, which is falsy, so it falls through to our own
+backoff rather than becoming an immediate retry. That behaviour rests entirely on 0
+being falsy — precisely the kind of thing a later reader "corrects" into `is not None`,
+at which point a stale header becomes an instant retry against a rate limit. There is a
+test pinning it for that reason.
+
+The other failure paths (401/403, network/5xx) are untouched, and a negative control
+asserts it: widening the rate-limit branch could otherwise swallow them while every
+other assertion still passed.
+
+**This does not explain the rate limits.** It stops the daemon from sustaining them.
+Why the limit is reached at all is not answered here, and the counters from §6 need
+days of accumulation before they can answer it.
+
 ## Tests
 
-`tests/test_local_measurement.py` covers all four changes. Each behaviour is paired with
-a control, because a check that only ever passes cannot distinguish "correct" from
-"measuring nothing" — e.g. the unknown-model warning is paired with an assertion that a
-known model stays silent, and the kill switch with an assertion that the call still
-happens when the switch is unset.
+`tests/test_local_measurement.py` covers §1–§4; `tests/test_poll_instrumentation.py`
+covers §6 and `tests/test_poll_backoff.py` covers §7. §5 is a deployment rule, not a
+code change, so nothing tests it — saying so is better than implying coverage that
+does not exist.
+
+Each behaviour is paired with a control, because a check that only ever passes cannot
+distinguish "correct" from "measuring nothing" — e.g. the unknown-model warning is
+paired with an assertion that a known model stays silent, the kill switch with an
+assertion that the call still happens when the switch is unset, and the rate-limit
+backoff with an assertion that the 401/403 and network paths still return their own
+delays.
