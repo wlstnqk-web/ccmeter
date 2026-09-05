@@ -121,8 +121,17 @@ def test_other_failures_keep_their_own_paths() -> None:
     Without this, widening the rate-limit branch could quietly swallow the auth and
     network cases, and every assertion above would still pass.
     """
-    assert delay(401) == 30
-    assert delay(403) == 30
+    # ★Checked as *separate paths*, not as fixed numbers.
+    #   The auth branch was later given a backoff of its own (see below), so pinning
+    #   401 to a literal 30 would have made this control fail for a change it was never
+    #   meant to catch. What it must keep catching is a rate-limit branch that reaches
+    #   past its own status codes — and the ceilings tell the three paths apart.
+    assert delay(401, backoff=10_000) == poll.AUTH_FAIL_MAX_DELAY
+    assert delay(403, backoff=10_000) == poll.AUTH_FAIL_MAX_DELAY
+    assert delay(429, backoff=10_000) == poll.RATE_LIMIT_MAX_DELAY
+    assert poll.AUTH_FAIL_MAX_DELAY != poll.RATE_LIMIT_MAX_DELAY, (
+        "the two ceilings must differ, or this control cannot tell the paths apart"
+    )
     # network/5xx: unchanged exponential path with its own 5m ceiling
     assert delay(0, backoff=60) == 120
     assert delay(500, backoff=10_000) == 300
@@ -132,3 +141,56 @@ def test_success_returns_to_the_normal_interval() -> None:
     """A recovered poll must not inherit the backed-off delay."""
     result = poll.PollResult(data={"five_hour": {"utilization": 1.0}}, status=200)
     assert poll._next_delay(result, INTERVAL, backoff=poll.RATE_LIMIT_MAX_DELAY) == INTERVAL
+
+# ── 401/403 ────────────────────────────────────────────────────────────────
+# The same bug the 429 branch had, left standing in its sibling: a flat 30s with no
+# ceiling. A credential that expires overnight is knocked on 2,880 times before anyone
+# wakes up, and every knock is refused for the same reason as the one before it.
+
+
+def test_a_run_of_auth_failures_backs_off_instead_of_drumming() -> None:
+    """Two rejections in a row must not produce the same wait twice."""
+    first = delay(401, backoff=INTERVAL)
+    second = delay(401, backoff=first)
+    assert second > first, f"{first} -> {second} is not a backoff"
+
+
+def test_auth_backoff_stops_at_the_ceiling() -> None:
+    """A long outage must not walk the delay out to hours."""
+    assert delay(401, backoff=10_000) == poll.AUTH_FAIL_MAX_DELAY
+    assert delay(403, backoff=poll.AUTH_FAIL_MAX_DELAY) == poll.AUTH_FAIL_MAX_DELAY
+
+
+def test_auth_floor_binds_only_when_the_cadence_is_short() -> None:
+    """A 10s poller must not answer a rejection with a 20s wait."""
+    result = poll.PollResult(status=401, retry_after=None)
+    assert poll._next_delay(result, 10, backoff=10) == poll.AUTH_FAIL_MIN_DELAY
+
+
+def test_403_takes_the_same_path_as_401() -> None:
+    """Both are 'your credential is the problem', and both were flat 30s before."""
+    assert delay(403, backoff=INTERVAL) == delay(401, backoff=INTERVAL)
+
+
+def test_the_auth_branch_does_not_swallow_server_errors() -> None:
+    """★Negative control — widening the auth branch must not capture 5xx.
+
+    Without this, changing `in (401, 403)` to something looser would still leave every
+    other test green: they only ever ask about 401/403. The server-error branch has its
+    own ceiling (300) reached by a different route, so the two are told apart by the
+    floor: a small backoff stays small here, but is lifted to 30 on the auth path.
+    """
+    result = poll.PollResult(status=500, retry_after=None)
+    assert poll._next_delay(result, 10, backoff=5) == 10  # 5*2, untouched by the floor
+    assert poll._next_delay(result, 10, backoff=5) != poll.AUTH_FAIL_MIN_DELAY
+
+
+def test_the_first_rejection_is_slower_than_it_used_to_be() -> None:
+    """★This change is not free, and the test says so out loud.
+
+    The old code returned a flat 30 for every rejection including the first. It now
+    waits `interval * 2`. Pinning it here means the trade is a decision on record
+    rather than something a later reader discovers from a graph.
+    """
+    assert delay(401, backoff=INTERVAL) == INTERVAL * 2
+    assert delay(401, backoff=INTERVAL) > 30
