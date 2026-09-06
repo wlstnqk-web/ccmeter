@@ -161,15 +161,32 @@ def test_auth_backoff_stops_at_the_ceiling() -> None:
     assert delay(403, backoff=poll.AUTH_FAIL_MAX_DELAY) == poll.AUTH_FAIL_MAX_DELAY
 
 
-def test_auth_floor_binds_only_when_the_cadence_is_short() -> None:
-    """A 10s poller must not answer a rejection with a 20s wait."""
-    result = poll.PollResult(status=401, retry_after=None)
+@pytest.mark.parametrize("backoff", [1, 10, INTERVAL, poll.AUTH_FAIL_MAX_DELAY, 10_000])
+def test_403_takes_the_same_path_as_401(backoff: int) -> None:
+    """Both are 'your credential is the problem', and both were flat 30s before.
+
+    The name claims the two share a *path*, so one sample cannot settle it. This asks
+    at every point where the branch does something different: below the floor, at the
+    normal cadence, at the ceiling, and past it. Previously only the middle point was
+    checked, while the ceiling was covered for 403 and the floor only for 401 — so a
+    change that split the pair at the floor would have left every test green.
+
+    Pinning the whole path here is also what lets the other tests stay single-status:
+    if 403 provably walks the same route as 401 everywhere, a fact proven for 401 is a
+    fact about 403.
+    """
+    assert delay(403, backoff=backoff) == delay(401, backoff=backoff)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_the_auth_floor_is_the_same_for_both(status: int) -> None:
+    """The floor binds on cadence, not on which rejection arrived.
+
+    Kept separate from the path test above because it uses a different interval —
+    the floor only shows up when the poll cadence is shorter than it.
+    """
+    result = poll.PollResult(status=status, retry_after=None)
     assert poll._next_delay(result, 10, backoff=10) == poll.AUTH_FAIL_MIN_DELAY
-
-
-def test_403_takes_the_same_path_as_401() -> None:
-    """Both are 'your credential is the problem', and both were flat 30s before."""
-    assert delay(403, backoff=INTERVAL) == delay(401, backoff=INTERVAL)
 
 
 def test_the_auth_branch_does_not_swallow_server_errors() -> None:

@@ -30,11 +30,11 @@ Zero external deps beyond `fncli`. stdlib `urllib` for HTTP.
 The daemon (`poll.py`) is the most important component. Everything else can be derived from its data. Design decisions:
 
 - **Pidfile lock**: `fcntl.LOCK_EX` on `~/.ccmeter/poll.pid` prevents duplicate pollers
-- **Status-aware retry**: 429 → respects full Retry-After header (no cap), 401/403 → immediate credential refresh + 30s retry, network/5xx → exponential backoff capped at 5m
+- **Status-aware retry**: 429 → respects full Retry-After header (no cap), 401/403 → immediate credential refresh, then exponential backoff floored at 30s and capped at 5m, network/5xx → exponential backoff capped at 5m
 - **Health file**: `~/.ccmeter/health.json` — atomically written every poll cycle. Single snapshot with ok/fail state, last 5 errors, and failure counts by kind since `counts_since`. Read by `ccmeter status`. No growth. Counts are in-memory totals and reset when the daemon restarts, which is why the window is written next to them.
 - **Event log**: every operational event carries a UTC timestamp and goes to stdout — samples, retries, credential refreshes alike. Failures are expected events, not crashes, so they share a stream with successes; splitting them made the two files impossible to interleave. `poll.err` is therefore reserved for startup errors and real tracebacks: anything in it is a fault.
 - **Log rotation**: truncates `poll.log`/`poll.err` to last 64KB when they exceed 512KB, runs once at startup
-- **Credential refresh**: 401/403 triggers immediate keychain re-read. Other failures trigger refresh after 3 consecutive failures as fallback
+- **Credential refresh**: 401/403 triggers immediate keychain re-read. Other failures trigger refresh after 3 consecutive failures as fallback. The re-read is immediate but the *retry* is not: a credential that stays rejected backs off, because re-reading the same expired token is not new information
 - **Account pinning**: if `~/.ccmeter/config.json` has `account_id`, poller skips recording when active credential doesn't match. Prevents data pollution on shared machines.
 
 ## Local state
