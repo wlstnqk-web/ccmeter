@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, cast
 
 from ccmeter.auth import Credentials, fetch_account_id, get_credentials
 from ccmeter.config import pinned_account
@@ -180,6 +180,48 @@ def fetch_usage(creds: Credentials) -> PollResult:
         return PollResult(error=str(e))
 
 
+SCOPED_PREFIX = "scoped:"
+
+
+def scoped_buckets(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Per-model weekly limits as buckets, keyed `scoped:<display name>`.
+
+    The response carries them in `limits[]`, a list, which the dict walk in
+    `record_samples` steps over — so a model's own weekly cap (e.g. Fable) was
+    fetched every cycle and never stored. Reading anything about it meant a second
+    call to the same endpoint, and two callers on one endpoint is what pushed the
+    429 count up. Only `weekly_scoped` entries with a model name and a numeric
+    percent become buckets; everything else in the list is left alone.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    limits = data.get("limits")
+    if not isinstance(limits, list):
+        return out
+    for item in cast("list[Any]", limits):
+        if not isinstance(item, dict):
+            continue
+        entry = cast("dict[str, Any]", item)
+        if entry.get("kind") != "weekly_scoped":
+            continue
+        raw_scope = entry.get("scope")
+        scope = cast("dict[str, Any]", raw_scope) if isinstance(raw_scope, dict) else {}
+        raw_model = scope.get("model")
+        model = cast("dict[str, Any]", raw_model) if isinstance(raw_model, dict) else {}
+        name = model.get("display_name")
+        pct = entry.get("percent")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if not isinstance(pct, (int, float)) or isinstance(pct, bool):
+            continue
+        out[SCOPED_PREFIX + name.strip()] = {
+            "utilization": float(pct),
+            "resets_at": entry.get("resets_at"),
+            "kind": "weekly_scoped",
+            "scope": scope,
+        }
+    return out
+
+
 def record_samples(
     data: dict[str, Any],
     last_seen: dict[str, float],
@@ -188,7 +230,7 @@ def record_samples(
     account_id: str | None = None,
 ) -> dict[str, float]:
     """Write rows for any bucket that changed. Returns updated last_seen."""
-    for key, value in data.items():
+    for key, value in [*data.items(), *scoped_buckets(data).items()]:
         if not isinstance(value, dict):
             continue
 

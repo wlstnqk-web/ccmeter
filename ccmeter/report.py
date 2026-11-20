@@ -200,6 +200,9 @@ def model_filter_for(bucket: str) -> str | None:
         "seven_day_sonnet": "claude-sonnet",
         "seven_day_opus": "claude-opus",
     }
+    if bucket.startswith("scoped:"):  # scoped:<display name> — e.g. 'scoped:Fable 5' → 'claude-fable'
+        words = bucket[len("scoped:") :].split()
+        return f"claude-{words[0].lower()}" if words else None
     return model_buckets.get(bucket)
 
 

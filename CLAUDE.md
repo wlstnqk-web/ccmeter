@@ -56,6 +56,7 @@ The daemon (`poll.py`) is the most important component. Everything else can be d
 - Credential blob: `{claudeAiOauth: {accessToken, refreshToken, expiresAt, subscriptionType, rateLimitTier}}`
 - Known buckets: `five_hour`, `seven_day`, `seven_day_sonnet`, `seven_day_opus`, `seven_day_cowork`, `seven_day_oauth_apps`, `extra_usage`
 - `extra_usage` uses `used_credits` instead of `utilization`
+- `limits[]` (a list) carries per-model weekly caps as `kind: weekly_scoped` entries — recorded as `scoped:<display name>` buckets (e.g. `scoped:Fable 5`), same change-only rule
 - Null buckets (e.g. `iguana_necktie`) are feature flags — we capture everything the API returns
 - Profile endpoint: `api.anthropic.com/api/oauth/profile` returns `account.uuid` for multi-account filtering
 
